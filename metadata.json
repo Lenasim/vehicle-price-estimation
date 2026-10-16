@@ -1,0 +1,46 @@
+{
+  "model_version": "1.0.0",
+  "trained_at": "2026-07-22T17:19:51.087751",
+  "target": "price",
+  "features": {
+    "marque": {
+      "type": "categorical",
+      "allowed_values": [
+        "audi",
+        "bmw",
+        "ford",
+        "tesla"
+      ]
+    },
+    "date_first_circulation": {
+      "type": "date",
+      "format": "YYYY-MM-DD"
+    },
+    "km": {
+      "type": "numeric",
+      "minimum": 0
+    },
+    "gearbox": {
+      "type": "categorical",
+      "allowed_values": [
+        "manual",
+        "auto"
+      ]
+    }
+  },
+  "monotone_constraints": {
+    "marque_audi": 0,
+    "marque_bmw": 0,
+    "marque_ford": 0,
+    "marque_tesla": 0,
+    "gearbox_auto": 0,
+    "age_years": -1,
+    "km": -1
+  },
+  "test_metrics": {
+    "mae": 534.4914449564616,
+    "rmse": 813.5174098294661,
+    "mape": 0.06307943115862612,
+    "r2": 0.9911601658842327
+  }
+}
