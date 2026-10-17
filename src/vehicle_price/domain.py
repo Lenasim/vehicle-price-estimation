@@ -1,0 +1,78 @@
+from datetime import date
+from typing import Protocol
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class Feature(BaseModel):
+    """Describe one model feature and its optional accepted values."""
+
+    type: str
+    allowed_values: list[str] | None = None
+
+
+class Metadata(BaseModel):
+    """Represent the model version and its input contract."""
+
+    model_version: str
+    features: dict[str, Feature]
+
+    @model_validator(mode="after")
+    def check_contract(self) -> "Metadata":
+        """Reject incomplete metadata required for categorical validation."""
+        if not self.model_version:
+            raise ValueError("model_version must not be empty")
+        for field in ("marque", "gearbox"):
+            if not self.features.get(field) or not self.features[field].allowed_values:
+                raise ValueError(f"Missing allowed_values for {field}")
+        return self
+
+    def validate_vehicle(self, vehicle: "Vehicle") -> None:
+        """Reject vehicle categories unsupported by the loaded model."""
+        for field in ("marque", "gearbox"):
+            allowed = self.features[field].allowed_values
+            if getattr(vehicle, field) not in allowed:
+                raise ContractError(f"Unsupported {field}: {getattr(vehicle, field)}")
+
+
+class Vehicle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    marque: str = Field(min_length=1, max_length=100)
+    date_first_circulation: date
+    km: float = Field(ge=0, allow_inf_nan=False)
+    gearbox: str = Field(min_length=1, max_length=100)
+
+    @field_validator("km", mode="before")
+    @classmethod
+    def numeric_km(cls, value):
+        """Require mileage to be a JSON number rather than a coerced value."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("km must be a JSON number")  # noqa: TRY004 (pydantic requires ValueError)
+        return value
+
+    @field_validator("date_first_circulation")
+    @classmethod
+    def past_date(cls, value: date) -> date:
+        """Reject circulation dates later than today."""
+        if value > date.today():
+            raise ValueError("date cannot be in the future")
+        return value
+
+
+class Prediction(BaseModel):
+    predicted_price: float
+    model_version: str
+
+
+class Predictor(Protocol):
+    def predict(self, vehicle: Vehicle) -> float:
+        """Return a price estimate for a validated vehicle."""
+        ...
+
+
+class ContractError(ValueError):
+    pass
+
+
+class BusyError(RuntimeError):
+    pass
