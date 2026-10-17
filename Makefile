@@ -1,4 +1,4 @@
-.PHONY: install dev health predict test lint smoke docker-build docker-run
+.PHONY: install dev health predict test lint smoke-model smoke-zip docker-build docker-run
 
 API_URL ?= http://localhost:8000
 
@@ -24,8 +24,11 @@ lint:
 	uv run ruff check .
 	uv run ruff format --check .
 
-smoke:
+smoke-model:
 	uv run python -m scripts.smoke_model
+
+smoke-zip:
+	uv run python scripts/smoke_zip.py
 
 docker-build:
 	docker build -t vehicle-price-api:latest .

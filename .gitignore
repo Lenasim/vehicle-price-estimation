@@ -10,3 +10,5 @@ __pycache__/
 .ruff_cache/
 dist/
 *.egg-info/
+
+vehicle-price-estimation-api.zip

@@ -183,7 +183,8 @@ make dev
 | `make predict` | Send the documented sample prediction request |
 | `make test` | Full test suite |
 | `make lint` | Static checks and formatting verification |
-| `make smoke` | Verify the serialized artifact in a clean process |
+| `make smoke-model` | Verify the serialized artifact in a clean process |
+| `make smoke-zip` | Build the submission ZIP and verify it in an isolated Python 3.12 environment |
 | `uv run pre-commit install` | Enable Ruff lint fixes and Ruff formatting before commits |
 
 ↑ [Contents](#vehicle-price-estimation-api)
