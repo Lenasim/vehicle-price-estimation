@@ -9,7 +9,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from vehicle_price.adapters import JoblibPredictor
-from vehicle_price.domain import BusyError, ContractError, Prediction, Vehicle
+from vehicle_price.domain import (
+    BusyError,
+    ContractError,
+    ErrorResponse,
+    HealthResponse,
+    Prediction,
+    Vehicle,
+)
 from vehicle_price.infrastructure import load_metadata, load_pipeline
 from vehicle_price.observability import configure_application_logging
 from vehicle_price.service import PredictionService
@@ -56,8 +63,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Vehicle Price Estimation API",
+        description=(
+            "Serve one vehicle price estimate from the supplied model pipeline. "
+            "The model is loaded once per worker and every prediction identifies "
+            "the model version that produced it."
+        ),
         version="1.0.0",
         lifespan=lifespan,
+        openapi_tags=[
+            {
+                "name": "Inference",
+                "description": "Validate one vehicle and return a versioned price estimate.",
+            },
+            {
+                "name": "Operations",
+                "description": "Inspect local worker readiness.",
+            },
+        ],
     )
 
     def log_request(request: Request, status_code: int, started: float) -> None:
@@ -172,18 +194,97 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return error(request, 500, "internal_error", "Prediction failed")
 
-    @app.get("/health")
-    async def health(request: Request):
+    @app.get(
+        "/health",
+        response_model=HealthResponse,
+        tags=["Operations"],
+        summary="Check model readiness",
+        description=(
+            "Return 200 only when this worker has loaded the model and metadata. "
+            "This is a readiness check, not an end-to-end prediction."
+        ),
+        responses={
+            503: {
+                "model": ErrorResponse,
+                "description": "The model is not available in this worker.",
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "error": {
+                                "code": "not_ready",
+                                "message": "Model is unavailable",
+                                "request_id": "5a5e38e2-b76f-41ad-9954-4a9f874a7f50",
+                            }
+                        }
+                    }
+                },
+            }
+        },
+    )
+    async def health(request: Request) -> HealthResponse | JSONResponse:
         """Report whether this worker has a ready prediction service."""
         service = getattr(request.app.state, "service", None)
         if service is None:
             return error(request, 503, "not_ready", "Model is unavailable")
-        return {
-            "status": "ok",
-            "model_version": service.metadata.model_version,
-        }
+        return HealthResponse(model_version=service.metadata.model_version)
 
-    @app.post("/predict", response_model=Prediction)
+    @app.post(
+        "/predict",
+        response_model=Prediction,
+        tags=["Inference"],
+        summary="Estimate one vehicle price",
+        description=(
+            "Validate the four model features, invoke the preloaded pipeline, and "
+            "return its finite non-negative output without display rounding. "
+            "Allowed brands and gearboxes come from the loaded metadata."
+        ),
+        responses={
+            422: {
+                "model": ErrorResponse,
+                "description": "The request schema or model feature contract is invalid.",
+                "content": {
+                    "application/json": {
+                        "examples": {
+                            "schema_error": {
+                                "summary": "Missing or malformed field",
+                                "value": {
+                                    "error": {
+                                        "code": "invalid_request",
+                                        "message": "Request schema validation failed",
+                                        "request_id": "5a5e38e2-b76f-41ad-9954-4a9f874a7f50",
+                                    }
+                                },
+                            },
+                            "unsupported_category": {
+                                "summary": "Value rejected by model metadata",
+                                "value": {
+                                    "error": {
+                                        "code": "invalid_feature",
+                                        "message": "Unsupported marque: peugeot",
+                                        "request_id": "5a5e38e2-b76f-41ad-9954-4a9f874a7f50",
+                                    }
+                                },
+                            },
+                        }
+                    }
+                },
+            },
+            500: {
+                "model": ErrorResponse,
+                "description": "Prediction failed after validation.",
+            },
+            503: {
+                "model": ErrorResponse,
+                "description": "Inference capacity is temporarily exhausted.",
+                "headers": {
+                    "Retry-After": {
+                        "description": "Seconds before the caller should retry.",
+                        "schema": {"type": "integer", "example": 1},
+                    }
+                },
+            },
+        },
+    )
     def predict(vehicle: Vehicle, request: Request):
         """Return a price prediction for one validated vehicle."""
         service = request.app.state.service

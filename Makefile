@@ -1,4 +1,4 @@
-.PHONY: install dev health predict test lint smoke-model smoke-zip docker-build docker-run
+.PHONY: install dev health predict test lint openapi smoke-model smoke-zip docker-build docker-run
 
 API_URL ?= http://localhost:8000
 
@@ -23,6 +23,9 @@ test:
 lint:
 	uv run ruff check .
 	uv run ruff format --check .
+
+openapi:
+	uv run python scripts/export_openapi.py
 
 smoke-model:
 	uv run python -m scripts.smoke_model

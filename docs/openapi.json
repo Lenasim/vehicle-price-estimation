@@ -1,0 +1,313 @@
+{
+  "components": {
+    "schemas": {
+      "ErrorDetail": {
+        "description": "Stable machine-readable error details.",
+        "properties": {
+          "code": {
+            "examples": [
+              "invalid_request"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "examples": [
+              "Request schema validation failed"
+            ],
+            "title": "Message",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Correlation ID also returned in the X-Request-ID header.",
+            "examples": [
+              "5a5e38e2-b76f-41ad-9954-4a9f874a7f50"
+            ],
+            "title": "Request Id"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "request_id"
+        ],
+        "title": "ErrorDetail",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "description": "Public error envelope; internal exception details are never returned.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "description": "Readiness state for a worker with a loaded model.",
+        "properties": {
+          "model_version": {
+            "description": "Version of the loaded model.",
+            "examples": [
+              "1.0.0"
+            ],
+            "title": "Model Version",
+            "type": "string"
+          },
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_version"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "Prediction": {
+        "description": "Successful prediction and the model version that produced it.",
+        "properties": {
+          "model_version": {
+            "description": "Version from model metadata.",
+            "examples": [
+              "1.0.0"
+            ],
+            "title": "Model Version",
+            "type": "string"
+          },
+          "predicted_price": {
+            "description": "Finite, non-negative model output without display rounding.",
+            "examples": [
+              7129.82666015625
+            ],
+            "title": "Predicted Price",
+            "type": "number"
+          }
+        },
+        "required": [
+          "predicted_price",
+          "model_version"
+        ],
+        "title": "Prediction",
+        "type": "object"
+      },
+      "Vehicle": {
+        "additionalProperties": false,
+        "description": "Validated vehicle attributes accepted by the inference API.",
+        "properties": {
+          "date_first_circulation": {
+            "description": "First registration date; future dates are rejected.",
+            "examples": [
+              "2018-03-01"
+            ],
+            "format": "date",
+            "title": "Date First Circulation",
+            "type": "string"
+          },
+          "gearbox": {
+            "description": "Gearbox accepted by the loaded model metadata.",
+            "examples": [
+              "auto"
+            ],
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Gearbox",
+            "type": "string"
+          },
+          "km": {
+            "description": "Non-negative odometer reading in kilometres.",
+            "examples": [
+              108946
+            ],
+            "minimum": 0.0,
+            "title": "Km",
+            "type": "number"
+          },
+          "marque": {
+            "description": "Brand accepted by the loaded model metadata.",
+            "examples": [
+              "bmw"
+            ],
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Marque",
+            "type": "string"
+          }
+        },
+        "required": [
+          "marque",
+          "date_first_circulation",
+          "km",
+          "gearbox"
+        ],
+        "title": "Vehicle",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Serve one vehicle price estimate from the supplied model pipeline. The model is loaded once per worker and every prediction identifies the model version that produced it.",
+    "title": "Vehicle Price Estimation API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "description": "Return 200 only when this worker has loaded the model and metadata. This is a readiness check, not an end-to-end prediction.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "code": "not_ready",
+                    "message": "Model is unavailable",
+                    "request_id": "5a5e38e2-b76f-41ad-9954-4a9f874a7f50"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The model is not available in this worker."
+          }
+        },
+        "summary": "Check model readiness",
+        "tags": [
+          "Operations"
+        ]
+      }
+    },
+    "/predict": {
+      "post": {
+        "description": "Validate the four model features, invoke the preloaded pipeline, and return its finite non-negative output without display rounding. Allowed brands and gearboxes come from the loaded metadata.",
+        "operationId": "predict_predict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Vehicle"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Prediction"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "schema_error": {
+                    "summary": "Missing or malformed field",
+                    "value": {
+                      "error": {
+                        "code": "invalid_request",
+                        "message": "Request schema validation failed",
+                        "request_id": "5a5e38e2-b76f-41ad-9954-4a9f874a7f50"
+                      }
+                    }
+                  },
+                  "unsupported_category": {
+                    "summary": "Value rejected by model metadata",
+                    "value": {
+                      "error": {
+                        "code": "invalid_feature",
+                        "message": "Unsupported marque: peugeot",
+                        "request_id": "5a5e38e2-b76f-41ad-9954-4a9f874a7f50"
+                      }
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request schema or model feature contract is invalid."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Prediction failed after validation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Inference capacity is temporarily exhausted.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds before the caller should retry.",
+                "schema": {
+                  "example": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Estimate one vehicle price",
+        "tags": [
+          "Inference"
+        ]
+      }
+    }
+  },
+  "tags": [
+    {
+      "description": "Validate one vehicle and return a versioned price estimate.",
+      "name": "Inference"
+    },
+    {
+      "description": "Inspect local worker readiness.",
+      "name": "Operations"
+    }
+  ]
+}

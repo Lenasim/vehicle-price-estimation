@@ -43,6 +43,8 @@ For the submitted ZIP, extract it first (`unzip vehicle-price-estimation-api.zip
 
 Interactive docs: [Swagger UI](http://localhost:8000/docs) · [ReDoc](http://localhost:8000/redoc) · [OpenAPI schema](http://localhost:8000/openapi.json) ↑ [Contents](#vehicle-price-estimation-api)
 
+The version-controlled [`docs/openapi.json`](docs/openapi.json) is generated from the FastAPI application with `make openapi`; the synchronization test prevents it from drifting from the runtime contract.
+
 ## API contract
 
 ### `POST /predict`
@@ -183,6 +185,7 @@ make dev
 | `make predict` | Send the documented sample prediction request |
 | `make test` | Full test suite |
 | `make lint` | Static checks and formatting verification |
+| `make openapi` | Regenerate the reviewable OpenAPI contract from FastAPI |
 | `make smoke-model` | Verify the serialized artifact in a clean process |
 | `make smoke-zip` | Build the submission ZIP and verify it in an isolated Python 3.12 environment |
 | `uv run pre-commit install` | Enable Ruff lint fixes and Ruff formatting before commits |

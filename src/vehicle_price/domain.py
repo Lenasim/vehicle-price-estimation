@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -36,11 +36,31 @@ class Metadata(BaseModel):
 
 
 class Vehicle(BaseModel):
+    """Validated vehicle attributes accepted by the inference API."""
+
     model_config = ConfigDict(extra="forbid")
-    marque: str = Field(min_length=1, max_length=100)
-    date_first_circulation: date
-    km: float = Field(ge=0, allow_inf_nan=False)
-    gearbox: str = Field(min_length=1, max_length=100)
+    marque: str = Field(
+        min_length=1,
+        max_length=100,
+        description="Brand accepted by the loaded model metadata.",
+        examples=["bmw"],
+    )
+    date_first_circulation: date = Field(
+        description="First registration date; future dates are rejected.",
+        examples=["2018-03-01"],
+    )
+    km: float = Field(
+        ge=0,
+        allow_inf_nan=False,
+        description="Non-negative odometer reading in kilometres.",
+        examples=[108946],
+    )
+    gearbox: str = Field(
+        min_length=1,
+        max_length=100,
+        description="Gearbox accepted by the loaded model metadata.",
+        examples=["auto"],
+    )
 
     @field_validator("km", mode="before")
     @classmethod
@@ -60,8 +80,41 @@ class Vehicle(BaseModel):
 
 
 class Prediction(BaseModel):
-    predicted_price: float
-    model_version: str
+    """Successful prediction and the model version that produced it."""
+
+    predicted_price: float = Field(
+        description="Finite, non-negative model output without display rounding.",
+        examples=[7129.82666015625],
+    )
+    model_version: str = Field(
+        description="Version from model metadata.", examples=["1.0.0"]
+    )
+
+
+class HealthResponse(BaseModel):
+    """Readiness state for a worker with a loaded model."""
+
+    status: Literal["ok"] = "ok"
+    model_version: str = Field(
+        description="Version of the loaded model.", examples=["1.0.0"]
+    )
+
+
+class ErrorDetail(BaseModel):
+    """Stable machine-readable error details."""
+
+    code: str = Field(examples=["invalid_request"])
+    message: str = Field(examples=["Request schema validation failed"])
+    request_id: str | None = Field(
+        description="Correlation ID also returned in the X-Request-ID header.",
+        examples=["5a5e38e2-b76f-41ad-9954-4a9f874a7f50"],
+    )
+
+
+class ErrorResponse(BaseModel):
+    """Public error envelope; internal exception details are never returned."""
+
+    error: ErrorDetail
 
 
 class Predictor(Protocol):
