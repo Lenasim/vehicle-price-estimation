@@ -1,247 +1,127 @@
 # Vehicle Price Estimation API
 
-Production-oriented inference API that serves the supplied vehicle price model over a small HTTP contract. Every response reports the model version that produced it.
-
-**Contents:** [Scope](#scope) · [Quick start](#quick-start) · [API contract](#api-contract) · [Inference flow](#inference-flow) · [Architecture](#architecture) · [Design decisions](#design-decisions) · [Configuration](#configuration) · [Quality checks](#quality-checks) · [Repository layout](#repository-layout) · [Known limitations](#known-limitations) · [Next steps](#next-steps) · [Further documentation](#further-documentation)
-
-## Scope
-
-| In scope                                        | Out of scope |
-|-------------------------------------------------| --- |
-| `POST /predict`, `GET /health`                  | Model training, automated retraining, model monitoring |
-| Strict validation of the four model features    | Authentication (shown in the AWS proposal only) |
-| One model load per worker                       | AWS infrastructure deployment |
-| Unit and integration tests on the real artifact | |
-| Docker and locked dependencies (Python 3.12)    | |
-
-The training notebook is model context only; it is not required to run the API. ↑ [Contents](#vehicle-price-estimation-api)
+Production-oriented FastAPI service for the supplied scikit-learn/XGBoost pipeline. It exposes a small, validated HTTP interface and returns the model version with every prediction.
 
 ## Quick start
 
-**Prerequisites:** Python 3.12, [uv](https://docs.astral.sh/uv/), `make`
+**Prerequisites:** Python 3.12, [uv](https://docs.astral.sh/uv/), and `make`.
 
 ```bash
 make install
+make test
 make dev        # http://localhost:8000
 ```
 
-With the server running, verify it from another terminal:
+From another terminal:
 
 ```bash
-make health
-make predict
+make health     # verify that the model is loaded
+make predict    # send the built-in example request
 ```
 
-Set `API_URL` to target another local port or environment, for example `make health API_URL=http://localhost:8080`.
+`make predict` uses an automatic BMW first registered in 2018 with 108,946 km. Use [Swagger UI](http://localhost:8000/docs) to try other values. To target another local port or environment:
 
-| Path | Requires                                         | Commands |
-| --- |--------------------------------------------------| --- |
-| Local | Python 3.12, uv, make                            | `make install && make test && make dev` |
-| Docker | Docker, make (network needed at build time only) | `make docker-build && make docker-run` |
+```bash
+make predict API_URL=http://localhost:8080
+```
 
-For the submitted ZIP, extract it first (`unzip vehicle-price-estimation-api.zip && cd vehicle-price-estimation-api`). The archive is self-contained: source, locked dependencies, model pipeline, and metadata must stay together.
+Docker provides the same API without requiring a local Python environment:
 
-Interactive docs: [Swagger UI](http://localhost:8000/docs) · [ReDoc](http://localhost:8000/redoc) · [OpenAPI schema](http://localhost:8000/openapi.json) ↑ [Contents](#vehicle-price-estimation-api)
+```bash
+make docker-build
+make docker-run
+```
 
-The version-controlled [`docs/openapi.json`](docs/openapi.json) is generated from the FastAPI application with `make openapi`; the synchronization test prevents it from drifting from the runtime contract.
+For the submitted archive, run `unzip vehicle-price-estimation-api.zip`, enter the extracted directory, and use either path above. The source, locked dependencies, model pipeline, and metadata are included.
 
-## API contract
+## Endpoints
 
-### `POST /predict`
-
-Request body:
-
-| Field | Type | Constraint |
+| Endpoint | Purpose | Main responses |
 | --- | --- | --- |
-| `marque` | string | `audi`, `bmw`, `ford`, `tesla` |
-| `date_first_circulation` | date | ISO `YYYY-MM-DD`, not in the future |
-| `km` | number | `>= 0` |
-| `gearbox` | string | `manual`, `auto` |
+| `POST /predict` | Validate one vehicle and return its predicted price and model version | `200`, `422`, `503`, `500` |
+| `GET /health` | Report whether the current worker has loaded the model | `200`, `503` |
 
-```bash
-curl --fail --request POST \
-  --header 'Content-Type: application/json' \
-  --data '{"marque":"bmw","date_first_circulation":"2018-03-01","km":108946,"gearbox":"auto"}' \
-  http://localhost:8000/predict
-```
+The generated contract is available in [Swagger UI](http://localhost:8000/docs), [ReDoc](http://localhost:8000/redoc), and [`docs/openapi.json`](docs/openapi.json). A test prevents the version-controlled OpenAPI document from drifting from the running application.
 
-Response (the price changes over time because the pipeline derives age from the current date; the shape is stable):
+## Verification
 
-```json
-{ "predicted_price": 7129.82666015625, "model_version": "1.0.0" }
-```
-
-The API returns the finite, non-negative model output without applying display rounding. It does not return a currency because neither the candidate brief nor the model metadata defines one; callers must not infer EUR from this contract.
-
-The allowed categorical values are read from `artifacts/metadata.json` at startup and enforced before inference. Basic field types, the non-negative mileage rule, the date format, and the future-date rule are enforced by the Pydantic request model.
-
-### `GET /health`
-
-Returns `200` once the pipeline is loaded in application state. It is a readiness check for a load balancer or orchestrator, not an end-to-end prediction test.
-
-```bash
-curl --fail http://localhost:8000/health
-# {"status": "ok", "model_version": "1.0.0"}
-```
-
-### Errors
-
-| Status | Meaning |
+| Command | Checks |
 | --- | --- |
-| `422` | Input does not satisfy the schema |
-| `503` | Application is running, model is not ready |
-| `500` | Prediction failed after validation (exception logged, not returned) |
+| `make lint` | Ruff linting · formatting |
+| `make test` | Unit tests · integration tests · real-model loading · OpenAPI synchronization |
+| `make smoke-model` | Clean-process model compatibility |
+| `make smoke-zip` | Archive rebuild · isolated Python 3.12 smoke test |
 
-↑ [Contents](#vehicle-price-estimation-api)
+Install the pre-commit checks with `uv run pre-commit install`.
 
-## Inference flow
+## Engineering decisions
+
+The model loads once per worker. Each request passes validation and a concurrency check before prediction.
+
+### Request path
 
 ```mermaid
 flowchart LR
-    Request[Validated HTTP request] --> Schema[Pydantic schema]
-    Schema --> Frame[One-row pandas DataFrame]
-    Frame --> Pipeline[scikit-learn Pipeline]
+    Artifacts[Model + metadata] -->|load once| Worker[FastAPI worker]
+    Request[POST /predict] --> Worker
+    Worker --> Validation[Schema + contract validation]
+    Validation --> Capacity[Concurrency check]
+    Capacity -->|available| Pipeline[In-memory pipeline]
+    Capacity -->|full| Busy[503 + Retry-After]
     Pipeline --> Response[Price + model version]
-
-    Startup[FastAPI lifespan startup] --> Loader[Compatibility-aware joblib loader]
-    Loader --> Pipeline
-    Metadata[metadata.json] --> Startup
 ```
 
-1. FastAPI validates the request before any model code runs.
-2. The `def` route runs in FastAPI's thread pool, keeping blocking CPU work off the event loop.
-3. The service builds the four-column `DataFrame` the pipeline expects.
-4. The preloaded pipeline performs feature transformation and prediction.
-5. The finite, non-negative model result is returned unchanged with its model version.
+Responsibilities are split by file:
 
-↑ [Contents](#vehicle-price-estimation-api)
+- [`main.py`](src/vehicle_price/main.py): HTTP routes, lifespan, and request logging
+- [`domain.py`](src/vehicle_price/domain.py): request, response, and model contracts
+- [`service.py`](src/vehicle_price/service.py): contract validation and capacity control
+- [`adapters.py`](src/vehicle_price/adapters.py): pipeline input and prediction
+- [`infrastructure.py`](src/vehicle_price/infrastructure.py): artifact loading and model compatibility
+- [`helpers/`](src/vehicle_price/helpers): supporting modules outside the core flow
+  - [`errors.py`](src/vehicle_price/helpers/errors.py): public error envelope and exception handlers
+  - [`openapi_docs.py`](src/vehicle_price/helpers/openapi_docs.py): OpenAPI tags and response documentation
+  - [`observability.py`](src/vehicle_price/helpers/observability.py): structured JSON logging
 
-## Architecture
+### 1. Optimization
 
-### Local and container
+- **Load once per worker with lifespan:** FastAPI's lifespan loads the model and metadata at startup, then reuses them from memory. [Code](src/vehicle_price/main.py#L31-L60) · [Test](tests/integration/test_lifecycle.py#L12-L32)
+- **Prevent overload:** FastAPI uses a thread pool and a concurrency limit for model calls. When capacity is full, the API returns a retryable `503`. [Route](src/vehicle_price/main.py#L122-L153) · [Capacity](src/vehicle_price/service.py#L6-L27) · [Test](tests/integration/test_predict.py#L94-L106)
 
-- Each Gunicorn worker loads `model_pipeline.joblib` and `metadata.json` once and holds its own copy. Choose worker count from measured CPU, memory, and latency.
-- The Docker image runs Gunicorn with two Uvicorn workers on port `8000`. Artifacts are bundled, so no AWS credentials or external services are needed.
+**Capacity controls:** Locally, Gunicorn workers, the FastAPI thread pool, and `API_INFERENCE_CONCURRENCY` control capacity. In AWS, Lambda concurrency and SageMaker instance count/autoscaling control scaling. Load tests set the limits.
 
-### Proposed AWS production architecture
+### 2. Reliability
 
-Not deployed by this repository. Target design for the company environment:
+- **Validate inputs and predictions:** Pydantic and model metadata reject invalid inputs. The adapter checks that the model returns exactly one valid price. [Input](src/vehicle_price/domain.py#L14-L79) · [Output](src/vehicle_price/adapters.py#L28-L34)
+- **Trace requests and errors:** A request ID links each API response to JSON logs with latency, outcome, error code, and model version. [Middleware](src/vehicle_price/main.py#L75-L102) · [Errors](src/vehicle_price/helpers/errors.py) · [Test](tests/integration/test_predict.py#L121-L132)
+- **Lock model dependencies:** Locked versions prevent unplanned dependency bumps from introducing unexpected errors. [Dependencies](pyproject.toml#L5-L26) · [Image](Dockerfile#L7-L11)
 
-```mermaid
-flowchart LR
-    User[Client] -->|HTTPS request| ALB[Application Load Balancer]
-    Identity[OIDC / company identity provider] -.->|Authentication policy| ALB
-    ALB -->|Invoke| API[API Lambda]
-    API -->|InvokeEndpoint| SM[SageMaker real-time endpoint]
-    SM -->|Read immutable release| S3[S3 model artifacts]
-    Registry[Model Registry and release workflow] -->|Approved deployment| SM
-    API -->|Logs and metrics| CW[CloudWatch]
-    SM -->|Logs, metrics, optional capture| CW
+### 3. Standardization
 
-    linkStyle 0,1,2,3,5 stroke:#2563eb,stroke-width:2px
-    linkStyle 4 stroke:#16a34a,stroke-width:2px
-    linkStyle 6,7 stroke:#dc2626,stroke-width:2px
-```
+- **Test at three levels:** Unit tests cover rules, integration tests exercise HTTP behavior with the supplied model artifact, and smoke tests verify model compatibility and the submitted ZIP in isolated local runs. [Unit](tests/unit) · [Integration](tests/integration) · [Model smoke](scripts/smoke_model.py) · [ZIP smoke](scripts/smoke_zip.py)
+- **Keep OpenAPI in sync:** A test compares the committed contract with the schema generated by the application. [Test](tests/integration/test_openapi.py#L28-L30) · [Contract](docs/openapi.json)
+- **Run checks before commit:** A pre-commit hook runs Ruff linting and formatting before changes enter Git. [Hook](.pre-commit-config.yaml)
+- **Standardize commit messages:** Conventional Commits keep the change history readable. [Convention](CONTRIBUTING.md)
+- **Follow GLC conventions:** The OpenAPI contract and AWS proposal align with the supplied decisions for ALB, CloudFront, Lambda, and CDK. [Decisions](instructions/decisions.instructions.md)
 
-Arrow colors: blue = request/deployment trigger, green = read, red = write.
+## Proposed AWS architecture
 
-- Authentication is enforced at the ALB/API boundary, not in model code. It is not implemented here.
-- The runnable code uses in-process inference. Reaching the AWS design needs a SageMaker serving contract, an API proxy adapter, IaC, IAM policies, and production validation.
+The repository implements local and container inference; it does **not** deploy AWS infrastructure. For production, the proposed design separates company-specific API requirements from model serving and deployment:
 
-↑ [Contents](#vehicle-price-estimation-api)
+![architect-schema.png](architect-schema.png)
 
-## Design decisions
+### Why SageMaker and a Proxy Lambda?
 
-| Decision | Rationale |
-| --- | --- |
-| Load once, predict many | Deserialization happens at startup (FastAPI lifespan), not per request |
-| Call the pipeline's `.predict(DataFrame)` | Preprocessing stays inside the pipeline, reducing training-serving skew |
-| Validate at the HTTP boundary | The model only sees its documented input domain; callers get standard `422` errors |
-| Synchronous `def` route | Pandas and scikit-learn are blocking; `async def` would block the event loop |
-| Return `model_version` | Provenance; in production, an immutable release ID from the process that ran inference |
+- **Separate API and model responsibilities:** Manage API contracts, logging, response and error formats, GLC authentication, and headers such as `X-Client-Source` separately from model inference and releases.
+- **Model management:** Track model versions and approvals with Model Registry, and configure gradual rollout and alarm-based rollback with SageMaker deployment guardrails.
+- **Independent scaling:** Configure API concurrency and model capacity separately.
+- **Trade-offs:** Continuous endpoint cost, an extra service call, and deployment configuration.
+- **Alternatives evaluated:** Model inference in Lambda or ECS Fargate
+- **Decision details:** [ADR-001](docs/adr/001-architecture-decision.md)
 
-↑ [Contents](#vehicle-price-estimation-api)
+## Before production deployment
 
-## Configuration
-
-| Variable | Default |
-| --- | --- |
-| `API_MODEL_PIPELINE_PATH` | `artifacts/model_pipeline.joblib` |
-| `API_METADATA_PATH` | `artifacts/metadata.json` |
-
-```bash
-API_MODEL_PIPELINE_PATH=/opt/models/model.joblib \
-API_METADATA_PATH=/opt/models/metadata.json \
-make dev
-```
-
-↑ [Contents](#vehicle-price-estimation-api)
-
-## Quality checks
-
-| Command | Purpose |
-| --- | --- |
-| `make health` | Check whether the local API worker is ready |
-| `make predict` | Send the documented sample prediction request |
-| `make test` | Full test suite |
-| `make lint` | Static checks and formatting verification |
-| `make openapi` | Regenerate the reviewable OpenAPI contract from FastAPI |
-| `make smoke-model` | Verify the serialized artifact in a clean process |
-| `make smoke-zip` | Build the submission ZIP and verify it in an isolated Python 3.12 environment |
-| `uv run pre-commit install` | Enable Ruff lint fixes and Ruff formatting before commits |
-
-↑ [Contents](#vehicle-price-estimation-api)
-
-## Repository layout
-
-```text
-.
-├── src/vehicle_price/
-│   ├── domain.py        # Vehicle, Prediction, Predictor protocol, domain errors
-│   ├── service.py       # PredictionService use case
-│   ├── adapters.py      # Domain Predictor port to scikit-learn adapter
-│   ├── infrastructure.py # JSON/joblib loading and artifact compatibility
-│   ├── settings.py      # Environment-backed settings
-│   └── main.py          # FastAPI app factory, routes, error handlers
-├── artifacts/           # metadata.json, model_pipeline.joblib (supplied)
-├── scripts/smoke_model.py
-├── tests/               # Unit and integration tests
-├── Dockerfile · Makefile · pyproject.toml · uv.lock
-```
-
-↑ [Contents](#vehicle-price-estimation-api)
-
-## Known limitations
-
-- **Date-dependent output:** age is computed from the server's current date, so identical inputs can yield different prices over time. A future cache key would need an effective prediction date.
-- **Future dates rejected:** a future first-registration date would produce a negative vehicle age outside the documented training domain.
-- **Currency unspecified:** the supplied contract and metadata do not define a currency, so the API deliberately returns none.
-- **Runtime categorical validation:** allowed brands and gearboxes come from `metadata.json`; OpenAPI exposes their fields as strings rather than a static enum.
-- **Unbenchmarked defaults:** the two-worker Gunicorn setting is a runnable default, not a measured optimum.
-- **Model version versus release ID:** structured JSON logs correlate requests, outcomes, durations, predictions, and the metadata model version, but the supplied artifact has no separate immutable release ID.
-- **No validated targets:** latency, memory, concurrency, availability, and cost are unmeasured.
-- **Shallow health check:** `/health` checks local readiness only.
-
-↑ [Contents](#vehicle-price-estimation-api)
-
-## Next steps
-
-1. Define p95/p99 latency, availability, timeout, privacy, and cost objectives.
-2. Benchmark cold start, warm inference, memory, CPU, and concurrency with representative traffic.
-3. Package the custom transformer as a versioned, importable module and re-export the artifact.
-4. Add operational metrics and define an immutable release ID distinct from the model version.
-5. Add CI for linting, tests, artifact compatibility, and container vulnerability scanning.
-6. Build the AWS path with CDK, least-privilege IAM, immutable image and artifact references, and rollback tests.
-7. Add drift analysis only after defining reference data and an action policy. Drift should trigger investigation, not automatic promotion.
-8. Evaluate batch inference separately; SageMaker Batch Transform does not replace the real-time API.
-9. Consider prediction caching only after measuring exact-input reuse. Model residency is mandatory; response caching is not.
-
-↑ [Contents](#vehicle-price-estimation-api)
-
-## Further documentation
-
-| Document | Content |
-| --- | --- |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Conventional Commits policy |
-
-↑ [Contents](#vehicle-price-estimation-api)
+- **CI/CD:** Run quality and security checks, then deploy with environment-specific configuration(dev/test/prod).
+- **Model release:** Add an immutable release ID, approval, gradual rollout, and rollback.
+- **IaC:** Define AWS resources and permissions with CDK. Use GLC's shared authentication(ALB helper).
+- **Monitoring and alarms:** Track latency, errors, saturation, endpoint health, and model drift. Use load tests to set capacity and alert thresholds.
