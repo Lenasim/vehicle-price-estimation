@@ -1,18 +1,20 @@
+import pytest
+
+VALID_PAYLOAD = {
+    "marque": "bmw",
+    "date_first_circulation": "2018-03-01",
+    "km": 108946,
+    "gearbox": "auto",
+}
+
+
 class FailingPredictor:
     def predict(self, vehicle):
         raise RuntimeError("prediction failed")
 
 
 def test_predict_success(client):
-    response = client.post(
-        "/predict",
-        json={
-            "marque": "bmw",
-            "date_first_circulation": "2018-03-01",
-            "km": 108946,
-            "gearbox": "auto",
-        },
-    )
+    response = client.post("/predict", json=VALID_PAYLOAD)
     assert response.status_code == 200
     data = response.json()
     assert data["predicted_price"] > 0
@@ -26,55 +28,41 @@ def test_health_ok(client):
     assert response.json()["status"] == "ok"
 
 
-def test_unknown_brand_returns_422(client):
-    response = client.post(
-        "/predict",
-        json={
-            "marque": "peugeot",
-            "date_first_circulation": "2018-03-01",
-            "km": 108946,
-            "gearbox": "auto",
-        },
-    )
+@pytest.mark.parametrize(
+    ("payload", "error_code"),
+    [
+        ({**VALID_PAYLOAD, "marque": "peugeot"}, "invalid_feature"),
+        ({**VALID_PAYLOAD, "gearbox": "cvt"}, "invalid_feature"),
+        (
+            {k: v for k, v in VALID_PAYLOAD.items() if k != "date_first_circulation"},
+            "invalid_request",
+        ),
+        ({**VALID_PAYLOAD, "km": -500}, "invalid_request"),
+        ({**VALID_PAYLOAD, "km": "108946"}, "invalid_request"),
+        (
+            {**VALID_PAYLOAD, "date_first_circulation": "2099-01-01", "km": 0},
+            "invalid_request",
+        ),
+        (
+            {**VALID_PAYLOAD, "owner_name": "must not be accepted or logged"},
+            "invalid_request",
+        ),
+    ],
+    ids=[
+        "unknown_brand",
+        "unknown_gearbox",
+        "missing_field",
+        "negative_km",
+        "string_km",
+        "future_date",
+        "unknown_field",
+    ],
+)
+def test_invalid_payload_returns_422(client, payload, error_code):
+    response = client.post("/predict", json=payload)
+
     assert response.status_code == 422
-
-
-def test_missing_field_returns_422(client):
-    response = client.post(
-        "/predict",
-        json={
-            "marque": "bmw",
-            "km": 108946,
-            "gearbox": "auto",
-        },
-    )
-    assert response.status_code == 422
-
-
-def test_negative_km_returns_422(client):
-    response = client.post(
-        "/predict",
-        json={
-            "marque": "bmw",
-            "date_first_circulation": "2018-03-01",
-            "km": -500,
-            "gearbox": "auto",
-        },
-    )
-    assert response.status_code == 422
-
-
-def test_future_registration_date_returns_422(client):
-    response = client.post(
-        "/predict",
-        json={
-            "marque": "bmw",
-            "date_first_circulation": "2099-01-01",
-            "km": 0,
-            "gearbox": "auto",
-        },
-    )
-    assert response.status_code == 422
+    assert response.json()["error"]["code"] == error_code
 
 
 def test_prediction_failure_returns_traceable_500(
@@ -82,15 +70,7 @@ def test_prediction_failure_returns_traceable_500(
 ):
     monkeypatch.setattr(client.app.state.service, "predictor", FailingPredictor())
 
-    response = client.post(
-        "/predict",
-        json={
-            "marque": "bmw",
-            "date_first_circulation": "2018-03-01",
-            "km": 108946,
-            "gearbox": "auto",
-        },
-    )
+    response = client.post("/predict", json=VALID_PAYLOAD)
 
     assert response.status_code == 500
     assert response.json()["error"]["request_id"] == response.headers["X-Request-ID"]
@@ -100,33 +80,6 @@ def test_prediction_failure_returns_traceable_500(
     assert failure.request_id == response.headers["X-Request-ID"]
     assert failure.model_version == "1.0.0"
     assert failure.error_code == "internal_error"
-
-
-def test_unknown_field_returns_422(client):
-    response = client.post(
-        "/predict",
-        json={
-            "marque": "bmw",
-            "date_first_circulation": "2018-03-01",
-            "km": 108946,
-            "gearbox": "auto",
-            "owner_name": "must not be accepted or logged",
-        },
-    )
-    assert response.status_code == 422
-
-
-def test_string_mileage_returns_422(client):
-    response = client.post(
-        "/predict",
-        json={
-            "marque": "bmw",
-            "date_first_circulation": "2018-03-01",
-            "km": "108946",
-            "gearbox": "auto",
-        },
-    )
-    assert response.status_code == 422
 
 
 def test_success_and_error_responses_include_request_id(client):
@@ -146,15 +99,7 @@ class UnavailableSlots:
 def test_capacity_exhaustion_returns_retryable_503(client, monkeypatch):
     monkeypatch.setattr(client.app.state.service, "slots", UnavailableSlots())
 
-    response = client.post(
-        "/predict",
-        json={
-            "marque": "bmw",
-            "date_first_circulation": "2018-03-01",
-            "km": 108946,
-            "gearbox": "auto",
-        },
-    )
+    response = client.post("/predict", json=VALID_PAYLOAD)
 
     assert response.status_code == 503
     assert response.headers["Retry-After"] == "1"
@@ -174,15 +119,7 @@ def test_health_returns_503_without_ready_service(client):
 
 
 def test_successful_prediction_emits_structured_business_log(client, application_logs):
-    response = client.post(
-        "/predict",
-        json={
-            "marque": "bmw",
-            "date_first_circulation": "2018-03-01",
-            "km": 108946,
-            "gearbox": "auto",
-        },
-    )
+    response = client.post("/predict", json=VALID_PAYLOAD)
 
     prediction_log = next(
         record for record in application_logs if record.event == "prediction_completed"

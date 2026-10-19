@@ -58,6 +58,31 @@ def test_invalid_brand_raises_contract_error():
         _metadata().validate_vehicle(vehicle)
 
 
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"model_version": "", "features": {}},
+        {
+            "model_version": "1.0.0",
+            "features": {
+                "gearbox": {"type": "categorical", "allowed_values": ["auto"]}
+            },
+        },
+        {
+            "model_version": "1.0.0",
+            "features": {
+                "marque": {"type": "categorical", "allowed_values": ["bmw"]},
+                "gearbox": {"type": "categorical", "allowed_values": []},
+            },
+        },
+    ],
+    ids=["empty_version", "missing_marque", "empty_gearbox_values"],
+)
+def test_incomplete_metadata_rejected(metadata):
+    with pytest.raises(ValidationError):
+        Metadata.model_validate(metadata)
+
+
 def test_invalid_gearbox_raises_contract_error():
     vehicle = Vehicle(
         marque="bmw",

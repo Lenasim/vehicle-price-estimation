@@ -2,7 +2,7 @@ import json
 import logging
 import sys
 
-from vehicle_price.observability import JsonFormatter
+from vehicle_price.helpers.observability import JsonFormatter
 
 
 def test_json_formatter_emits_structured_fields_and_exception():

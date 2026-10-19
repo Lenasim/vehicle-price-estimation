@@ -5,20 +5,18 @@ from uuid import uuid4
 
 import anyio
 from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from vehicle_price.adapters import JoblibPredictor
-from vehicle_price.domain import (
-    BusyError,
-    ContractError,
-    ErrorResponse,
-    HealthResponse,
-    Prediction,
-    Vehicle,
+from vehicle_price.domain import HealthResponse, Prediction, Vehicle
+from vehicle_price.helpers.errors import error_response, register_error_handlers
+from vehicle_price.helpers.observability import configure_application_logging
+from vehicle_price.helpers.openapi_docs import (
+    HEALTH_RESPONSES,
+    OPENAPI_TAGS,
+    PREDICT_RESPONSES,
 )
 from vehicle_price.infrastructure import load_metadata, load_pipeline
-from vehicle_price.observability import configure_application_logging
 from vehicle_price.service import PredictionService
 from vehicle_price.settings import Settings
 
@@ -70,17 +68,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
         version="1.0.0",
         lifespan=lifespan,
-        openapi_tags=[
-            {
-                "name": "Inference",
-                "description": "Validate one vehicle and return a versioned price estimate.",
-            },
-            {
-                "name": "Operations",
-                "description": "Inspect local worker readiness.",
-            },
-        ],
+        openapi_tags=OPENAPI_TAGS,
     )
+    register_error_handlers(app)
 
     def log_request(request: Request, status_code: int, started: float) -> None:
         """Log the completed request with its correlation ID and duration."""
@@ -111,89 +101,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         log_request(request, response.status_code, started)
         return response
 
-    def error(request: Request, status: int, code: str, message: str, headers=None):
-        """Build the service's consistent public error response."""
-        request_id = getattr(request.state, "request_id", None)
-        response_headers = dict(headers or {})
-        if request_id is not None:
-            response_headers["X-Request-ID"] = request_id
-        return JSONResponse(
-            status_code=status,
-            content={
-                "error": {
-                    "code": code,
-                    "message": message,
-                    "request_id": request_id,
-                }
-            },
-            headers=response_headers,
-        )
-
-    @app.exception_handler(RequestValidationError)
-    async def validation_error(request: Request, exc: RequestValidationError):
-        """Map request schema failures to the public validation error."""
-        logger.warning(
-            "Request validation failed",
-            extra={
-                "event": "request_rejected",
-                "request_id": request.state.request_id,
-                "outcome": "failure",
-                "error_code": "invalid_request",
-            },
-        )
-        return error(
-            request, 422, "invalid_request", "Request schema validation failed"
-        )
-
-    @app.exception_handler(ContractError)
-    async def contract_error(request: Request, exc: ContractError):
-        """Map model contract failures to an invalid-feature response."""
-        logger.warning(
-            "Model feature rejected",
-            extra={
-                "event": "request_rejected",
-                "request_id": request.state.request_id,
-                "outcome": "failure",
-                "error_code": "invalid_feature",
-            },
-        )
-        return error(request, 422, "invalid_feature", str(exc))
-
-    @app.exception_handler(BusyError)
-    async def busy_error(request: Request, exc: BusyError):
-        """Map exhausted inference capacity to a retryable response."""
-        logger.warning(
-            "Inference capacity exhausted",
-            extra={
-                "event": "prediction_rejected",
-                "request_id": request.state.request_id,
-                "outcome": "failure",
-                "error_code": "capacity_exhausted",
-            },
-        )
-        return error(request, 503, "capacity_exhausted", str(exc), {"Retry-After": "1"})
-
-    @app.exception_handler(Exception)
-    async def unexpected_error(request: Request, exc: Exception):
-        """Log unexpected failures while hiding internal details from clients."""
-        logger.error(
-            "Prediction failed",
-            extra={
-                "event": "prediction_failed",
-                "request_id": getattr(request.state, "request_id", None),
-                "outcome": "failure",
-                "duration_ms": round(
-                    (time.perf_counter() - request.state.inference_started) * 1000, 3
-                )
-                if hasattr(request.state, "inference_started")
-                else None,
-                "model_version": getattr(request.state, "model_version", None),
-                "error_code": "internal_error",
-            },
-            exc_info=(type(exc), exc, exc.__traceback__),
-        )
-        return error(request, 500, "internal_error", "Prediction failed")
-
     @app.get(
         "/health",
         response_model=HealthResponse,
@@ -203,29 +110,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "Return 200 only when this worker has loaded the model and metadata. "
             "This is a readiness check, not an end-to-end prediction."
         ),
-        responses={
-            503: {
-                "model": ErrorResponse,
-                "description": "The model is not available in this worker.",
-                "content": {
-                    "application/json": {
-                        "example": {
-                            "error": {
-                                "code": "not_ready",
-                                "message": "Model is unavailable",
-                                "request_id": "5a5e38e2-b76f-41ad-9954-4a9f874a7f50",
-                            }
-                        }
-                    }
-                },
-            }
-        },
+        responses=HEALTH_RESPONSES,
     )
     async def health(request: Request) -> HealthResponse | JSONResponse:
         """Report whether this worker has a ready prediction service."""
         service = getattr(request.app.state, "service", None)
         if service is None:
-            return error(request, 503, "not_ready", "Model is unavailable")
+            return error_response(request, 503, "not_ready", "Model is unavailable")
         return HealthResponse(model_version=service.metadata.model_version)
 
     @app.post(
@@ -238,52 +129,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "return its finite non-negative output without display rounding. "
             "Allowed brands and gearboxes come from the loaded metadata."
         ),
-        responses={
-            422: {
-                "model": ErrorResponse,
-                "description": "The request schema or model feature contract is invalid.",
-                "content": {
-                    "application/json": {
-                        "examples": {
-                            "schema_error": {
-                                "summary": "Missing or malformed field",
-                                "value": {
-                                    "error": {
-                                        "code": "invalid_request",
-                                        "message": "Request schema validation failed",
-                                        "request_id": "5a5e38e2-b76f-41ad-9954-4a9f874a7f50",
-                                    }
-                                },
-                            },
-                            "unsupported_category": {
-                                "summary": "Value rejected by model metadata",
-                                "value": {
-                                    "error": {
-                                        "code": "invalid_feature",
-                                        "message": "Unsupported marque: peugeot",
-                                        "request_id": "5a5e38e2-b76f-41ad-9954-4a9f874a7f50",
-                                    }
-                                },
-                            },
-                        }
-                    }
-                },
-            },
-            500: {
-                "model": ErrorResponse,
-                "description": "Prediction failed after validation.",
-            },
-            503: {
-                "model": ErrorResponse,
-                "description": "Inference capacity is temporarily exhausted.",
-                "headers": {
-                    "Retry-After": {
-                        "description": "Seconds before the caller should retry.",
-                        "schema": {"type": "integer", "example": 1},
-                    }
-                },
-            },
-        },
+        responses=PREDICT_RESPONSES,
     )
     def predict(vehicle: Vehicle, request: Request):
         """Return a price prediction for one validated vehicle."""

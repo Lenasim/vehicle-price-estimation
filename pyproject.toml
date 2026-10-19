@@ -33,3 +33,6 @@ pythonpath = ["src"]
 
 [tool.ruff]
 extend-exclude = ["notebooks/price_estimation_model_training.ipynb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
